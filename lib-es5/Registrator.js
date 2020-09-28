@@ -165,7 +165,7 @@ module.exports = /*#__PURE__*/function () {
 
                 expires = Number(expires);
                 if (expires < MIN_REGISTER_EXPIRES) expires = MIN_REGISTER_EXPIRES;
-                var timeout = expires > 64 ? expires * 1000 / 2 + Math.floor((expires / 2 - 32) * 1000 * Math.random()) : expires * 1000 - 5000; // Re-Register or emit an event before the expiration interval has elapsed.
+                var timeout = expires * 1000 / 100 * 80; // Re-Register or emit an event before the expiration interval has elapsed.
                 // For that, decrease the expires value. ie: 3 seconds.
 
                 _this._registrationTimer = setTimeout(function () {
