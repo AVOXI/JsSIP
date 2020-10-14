@@ -1,6 +1,97 @@
 CHANGELOG
 =========
 
+Version 3.5.5 (released in 2020-07-29)
+---------------------------------------
+
+* JsSIP.d.ts: import and export in two steps. #651. Credits to @ashlanderDesign.
+
+Version 3.5.4 (released in 2020-07-24)
+---------------------------------------
+
+* Fix request cseq upon 491 response (#653). Credits to @mattdimeo.
+* UA: Allow to change authorization_user (#652). Credits to @jose-lopes.
+
+Version 3.5.3 (released in 2020-07-09)
+---------------------------------------
+
+* RTCSession: force gather candidates when iceRestart is true (#641). Credits to @jose-lopes.
+* Fix crash if the request does not have Content-Type header (#650). Credits to @hxl-dy
+
+Version 3.5.2 (released in 2020-07-07)
+---------------------------------------
+
+* Fix Via 'port' parser (#642).
+
+Version 3.5.1 (released in 2020-06-16)
+---------------------------------------
+
+* Export Socket interface (#637).
+
+Version 3.5.0 (released in 2020-06-01)
+---------------------------------------
+
+* Typescript typings (#627).
+
+Version 3.4.4 (released in 2020-05-08)
+---------------------------------------
+
+* Clone optional objects (#625). Credits to @acharlop.
+* RTCSession: fix, allow initial INVITE no SDP/offer (#624). Credits to @mgoodenUK.
+
+Version 3.4.3 (released in 2020-04-22)
+---------------------------------------
+
+* Transactions: destroy transaction in Timer I after terminating. Thanks Juha Heinanen for reporting the issue.
+
+Version 3.4.2 (released in 2020-04-03)
+---------------------------------------
+
+* RTCSession: disable remote hold state when receiving an INVITE without SDP (#613). Credits to @RobyMcAndrew.
+
+
+Version 3.4.1 (released in 2020-03-30)
+---------------------------------------
+
+* RequestSender: fix Authorization header addition for jwt use.
+
+
+Version 3.4.0 (released in 2020-03-29)
+---------------------------------------
+
+* Add `authorization_jwt` configuration parameter (#610). Credits to @voicenter.
+
+
+Version 3.3.11 (released in 2019-10-24)
+---------------------------------------
+
+* RTCSession: don't relay on 'icecandidate' event with null candidate (#598). Thanks @skanizaj.
+
+
+Version 3.3.10 (released in 2019-10-16)
+---------------------------------------
+
+* RTCSession: honor BYE while in WAITING_FOR_ACK state (#597). Thanks @Egorikhin.
+
+
+Version 3.3.9 (released in 2019-09-24)
+---------------------------------------
+
+* Added NOTIFY to allowed methods (#593). Credits to @ikq.
+
+
+Version 3.3.8 (released in 2019-09-24)
+---------------------------------------
+
+* Move connection recovery defaults to Constants (#593). Credits to @KraftyKraft.
+
+
+Version 3.3.7 (released in 2019-08-12)
+---------------------------------------
+
+* Add referred-by header to refer messages (#572). Credits to @swysor.
+
+
 Version 3.3.6 (released in 2019-04-12)
 ---------------------------------------
 
