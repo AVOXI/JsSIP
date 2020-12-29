@@ -412,10 +412,10 @@ module.exports = function (_EventEmitter) {
       // TODO: Document that 'response' field in 'progress' event is null for incoming calls.
       this._progress('local', null);
 
-      // About to run setupCall
-      debug('Running setupCall()');
+      // Create RTCConnection, add media stream, and start gathering candidates
+      // This is in an attempt to reduce latency between the user hitting the answer button
+      // and having media flowing.
       this._setupCall();
-      debug('Ran setupCall()');
     }
   }, {
     key: '_setupCall',
@@ -575,7 +575,6 @@ module.exports = function (_EventEmitter) {
 
       // Create a new RTCPeerConnection instance.
       // TODO: This may throw an error, should react.
-      debug('Creating the RTC connection...');
       this._createRTCConnection(pcConfig, rtcConstraints);
 
       Promise.resolve().then(function () {
@@ -588,7 +587,6 @@ module.exports = function (_EventEmitter) {
         // Audio and/or video requested, prompt getUserMedia.
         else if (mediaConstraints.audio || mediaConstraints.video) {
             _this3._localMediaStreamLocallyGenerated = true;
-            debug('About to getUserMedia for stream...');
             return navigator.mediaDevices.getUserMedia(mediaConstraints).catch(function (error) {
               if (_this3._status === C.STATUS_TERMINATED) {
                 throw new Error('terminated');
@@ -607,35 +605,27 @@ module.exports = function (_EventEmitter) {
       })
       // Attach MediaStream to RTCPeerconnection.
       .then(function (stream) {
-        debug('Has stream!', stream);
         if (_this3._status === C.STATUS_TERMINATED) {
           throw new Error('terminated');
         }
 
         _this3._localMediaStream = stream;
         if (stream) {
-          debug('Adding stream to rtc peer connection...');
-          debug('Trying to add track instead...');
           _this3._connection.addStream(stream);
         }
       })
       // Set remote description.
       .then(function () {
-        debug('In set remote description promise chain...');
         if (_this3._late_sdp) {
-          debug('In set remote description promise chain... exiting early...');
           return;
         }
 
         var e = { originator: 'remote', type: 'offer', sdp: request.body };
 
-        // Maybe get rid of this...
         debug('emit "sdp"');
         _this3.emit('sdp', e);
 
         var offer = new RTCSessionDescription({ type: 'offer', sdp: e.sdp });
-
-        debug('created remote offer', offer);
 
         _this3._connectionPromiseQueue = _this3._connectionPromiseQueue.then(function () {
           return _this3._connection.setRemoteDescription(offer);
@@ -655,24 +645,17 @@ module.exports = function (_EventEmitter) {
       })
       // Create local description.
       .then(function () {
-        debug('In create local description promise chain...');
         if (_this3._status === C.STATUS_TERMINATED) {
           throw new Error('terminated');
         }
 
-        // TODO: Is this event already useful?
-        debug('skipped connecting request function...');
-        // this._connecting(request);
-
         if (!_this3._late_sdp) {
-          debug('NOT late sdp, creating local answer description...');
           return _this3._createLocalDescription('answer', rtcAnswerConstraints).catch(function () {
             request.reply(500);
 
             throw new Error('_createLocalDescription() failed');
           });
         } else {
-          debug('late sdp, creating local offer description...');
           return _this3._createLocalDescription('offer', _this3._rtcOfferConstraints).catch(function () {
             request.reply(500);
 
@@ -680,7 +663,6 @@ module.exports = function (_EventEmitter) {
           });
         }
       }).catch(function (error) {
-        debug('Promise chain catch', error);
         if (_this3._status === C.STATUS_TERMINATED) {
           return;
         }
@@ -882,18 +864,18 @@ module.exports = function (_EventEmitter) {
       // Create a new RTCPeerConnection instance.
       // TODO: This may throw an error, should react.
       var existingRTCConnection = true;
-      debug('Answering call... creating RTC Connection...');
       if (!this._connection) {
-        debug('RTC Connection doesn\'t exist, creating a new one...');
+        debug('RTC Connection does not exist, creating a new one.');
         existingRTCConnection = false;
         this._createRTCConnection(pcConfig, rtcConstraints);
+      } else {
+        debug('RTC Connection exists (created during setupCall)');
       }
 
       Promise.resolve()
       // Handle local MediaStream.
       .then(function () {
         if (!existingRTCConnection) {
-          debug('No RTC Connection exists so running media stream discovery code...');
           // A local MediaStream is given, use it.
           if (mediaStream) {
             debug('Short circuited mediaStream', mediaStream);
@@ -920,30 +902,23 @@ module.exports = function (_EventEmitter) {
               });
             }
         }
-        debug('RTC Connection exists so NOT running media stream discovery code...');
       })
       // Attach MediaStream to RTCPeerconnection.
       .then(function (stream) {
         if (!existingRTCConnection) {
-          debug('No RTC Connection exists so running media stream addition code...');
-          debug('Has stream!', stream);
           if (_this4._status === C.STATUS_TERMINATED) {
             throw new Error('terminated');
           }
 
           _this4._localMediaStream = stream;
           if (stream) {
-            debug('Adding stream to rtc peer connection...');
-            debug('Trying to add track instead...');
             _this4._connection.addStream(stream);
           }
         }
-        debug('RTC Connection exists so NOT running media stream addition code...');
       })
       // Set remote description.
       .then(function () {
         if (!existingRTCConnection) {
-          debug('No RTC Connection exists so running the setRemoteDescription code...');
           if (_this4._late_sdp) {
             return;
           }
@@ -971,13 +946,10 @@ module.exports = function (_EventEmitter) {
 
           return _this4._connectionPromiseQueue;
         }
-        debug('RTC Connection exists so NOT running the setRemoteDescription code...');
-        return Promise.resolve();
       })
       // Create local description.
       .then(function () {
         if (!existingRTCConnection) {
-          debug('No RTC Connection exists so running the createLocalDescription code...');
           if (_this4._status === C.STATUS_TERMINATED) {
             throw new Error('terminated');
           }
@@ -1000,7 +972,6 @@ module.exports = function (_EventEmitter) {
             });
           }
         }
-        debug('RTC Connection exists so NOT running the createLocalDescription code...');
         _this4._connecting(request);
         return _this4._connection.localDescription.sdp;
       })
