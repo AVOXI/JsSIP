@@ -415,11 +415,11 @@ module.exports = function (_EventEmitter) {
       // Create RTCConnection, add media stream, and start gathering candidates
       // This is in an attempt to reduce latency between the user hitting the answer button
       // and having media flowing.
-      // this._setupCall()
+      this._setupCall();
     }
   }, {
-    key: 'setupCall',
-    value: function setupCall() {
+    key: '_setupCall',
+    value: function _setupCall() {
       var _this3 = this;
 
       var options = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {};
