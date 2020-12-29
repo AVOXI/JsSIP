@@ -411,23 +411,22 @@ module.exports = function (_EventEmitter) {
       // Fire 'progress' event.
       // TODO: Document that 'response' field in 'progress' event is null for incoming calls.
       this._progress('local', null);
+
+      // About to run setupCall
+      debug('Running setupCall()');
+      this._setupCall();
+      debug('Ran setupCall()');
     }
-
-    /**
-     * Answer the call.
-     */
-
   }, {
-    key: 'answer',
-    value: function answer() {
+    key: '_setupCall',
+    value: function _setupCall() {
       var _this3 = this;
 
       var options = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {};
 
-      debug('answer()');
+      debug('setupCall()');
 
       var request = this._request;
-      var extraHeaders = Utils.cloneArray(options.extraHeaders);
       var mediaConstraints = options.mediaConstraints || {};
       var mediaStream = options.mediaStream || null;
       var pcConfig = options.pcConfig || { iceServers: [] };
@@ -449,35 +448,6 @@ module.exports = function (_EventEmitter) {
       if (this._direction !== 'incoming') {
         throw new Exceptions.NotSupportedError('"answer" not supported for outgoing RTCSession');
       }
-
-      // Check Session status.
-      if (this._status !== C.STATUS_WAITING_FOR_ANSWER) {
-        throw new Exceptions.InvalidStateError(this._status);
-      }
-
-      // Session Timers.
-      if (this._sessionTimers.enabled) {
-        if (Utils.isDecimal(options.sessionTimersExpires)) {
-          if (options.sessionTimersExpires >= JsSIP_C.MIN_SESSION_EXPIRES) {
-            this._sessionTimers.defaultExpires = options.sessionTimersExpires;
-          } else {
-            this._sessionTimers.defaultExpires = JsSIP_C.SESSION_EXPIRES;
-          }
-        }
-      }
-
-      this._status = C.STATUS_ANSWERED;
-
-      // An error on dialog creation will fire 'failed' event.
-      if (!this._createDialog(request, 'UAS')) {
-        request.reply(500, 'Error creating dialog');
-
-        return;
-      }
-
-      clearTimeout(this._timers.userNoAnswerTimer);
-
-      extraHeaders.unshift('Contact: ' + this._contact);
 
       // Determine incoming media from incoming SDP offer (if any).
       var sdp = request.parseSDP();
@@ -605,20 +575,20 @@ module.exports = function (_EventEmitter) {
 
       // Create a new RTCPeerConnection instance.
       // TODO: This may throw an error, should react.
+      debug('Creating the RTC connection...');
       this._createRTCConnection(pcConfig, rtcConstraints);
 
-      Promise.resolve()
-      // Handle local MediaStream.
-      .then(function () {
+      Promise.resolve().then(function () {
         // A local MediaStream is given, use it.
         if (mediaStream) {
+          debug('Short circuited mediaStream', mediaStream);
           return mediaStream;
         }
 
         // Audio and/or video requested, prompt getUserMedia.
         else if (mediaConstraints.audio || mediaConstraints.video) {
             _this3._localMediaStreamLocallyGenerated = true;
-
+            debug('About to getUserMedia for stream...');
             return navigator.mediaDevices.getUserMedia(mediaConstraints).catch(function (error) {
               if (_this3._status === C.STATUS_TERMINATED) {
                 throw new Error('terminated');
@@ -637,27 +607,35 @@ module.exports = function (_EventEmitter) {
       })
       // Attach MediaStream to RTCPeerconnection.
       .then(function (stream) {
+        debug('Has stream!', stream);
         if (_this3._status === C.STATUS_TERMINATED) {
           throw new Error('terminated');
         }
 
         _this3._localMediaStream = stream;
         if (stream) {
+          debug('Adding stream to rtc peer connection...');
+          debug('Trying to add track instead...');
           _this3._connection.addStream(stream);
         }
       })
       // Set remote description.
       .then(function () {
+        debug('In set remote description promise chain...');
         if (_this3._late_sdp) {
+          debug('In set remote description promise chain... exiting early...');
           return;
         }
 
         var e = { originator: 'remote', type: 'offer', sdp: request.body };
 
+        // Maybe get rid of this...
         debug('emit "sdp"');
         _this3.emit('sdp', e);
 
         var offer = new RTCSessionDescription({ type: 'offer', sdp: e.sdp });
+
+        debug('created remote offer', offer);
 
         _this3._connectionPromiseQueue = _this3._connectionPromiseQueue.then(function () {
           return _this3._connection.setRemoteDescription(offer);
@@ -677,46 +655,374 @@ module.exports = function (_EventEmitter) {
       })
       // Create local description.
       .then(function () {
+        debug('In create local description promise chain...');
         if (_this3._status === C.STATUS_TERMINATED) {
           throw new Error('terminated');
         }
 
         // TODO: Is this event already useful?
-        _this3._connecting(request);
+        debug('skipped connecting request function...');
+        // this._connecting(request);
 
         if (!_this3._late_sdp) {
+          debug('NOT late sdp, creating local answer description...');
           return _this3._createLocalDescription('answer', rtcAnswerConstraints).catch(function () {
             request.reply(500);
 
             throw new Error('_createLocalDescription() failed');
           });
         } else {
+          debug('late sdp, creating local offer description...');
           return _this3._createLocalDescription('offer', _this3._rtcOfferConstraints).catch(function () {
             request.reply(500);
 
             throw new Error('_createLocalDescription() failed');
           });
         }
+      }).catch(function (error) {
+        debug('Promise chain catch', error);
+        if (_this3._status === C.STATUS_TERMINATED) {
+          return;
+        }
+
+        debugerror(error);
+      });
+    }
+
+    /**
+     * Answer the call.
+     */
+
+  }, {
+    key: 'answer',
+    value: function answer() {
+      var _this4 = this;
+
+      var options = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {};
+
+      debug('answer()');
+
+      var request = this._request;
+      var extraHeaders = Utils.cloneArray(options.extraHeaders);
+      var mediaConstraints = options.mediaConstraints || {};
+      var mediaStream = options.mediaStream || null;
+      var pcConfig = options.pcConfig || { iceServers: [] };
+      var rtcConstraints = options.rtcConstraints || null;
+      var rtcAnswerConstraints = options.rtcAnswerConstraints || null;
+
+      var tracks = void 0;
+      var peerHasAudioLine = false;
+      var peerHasVideoLine = false;
+      var peerOffersFullAudio = false;
+      var peerOffersFullVideo = false;
+
+      this._rtcAnswerConstraints = rtcAnswerConstraints;
+      this._rtcOfferConstraints = options.rtcOfferConstraints || null;
+
+      this._data = options.data || this._data;
+
+      // Check Session Direction and Status.
+      if (this._direction !== 'incoming') {
+        throw new Exceptions.NotSupportedError('"answer" not supported for outgoing RTCSession');
+      }
+
+      // Check Session status.
+      if (this._status !== C.STATUS_WAITING_FOR_ANSWER) {
+        throw new Exceptions.InvalidStateError(this._status);
+      }
+
+      // Session Timers.
+      if (this._sessionTimers.enabled) {
+        if (Utils.isDecimal(options.sessionTimersExpires)) {
+          if (options.sessionTimersExpires >= JsSIP_C.MIN_SESSION_EXPIRES) {
+            this._sessionTimers.defaultExpires = options.sessionTimersExpires;
+          } else {
+            this._sessionTimers.defaultExpires = JsSIP_C.SESSION_EXPIRES;
+          }
+        }
+      }
+
+      this._status = C.STATUS_ANSWERED;
+
+      // An error on dialog creation will fire 'failed' event.
+      if (!this._createDialog(request, 'UAS')) {
+        request.reply(500, 'Error creating dialog');
+
+        return;
+      }
+
+      clearTimeout(this._timers.userNoAnswerTimer);
+
+      extraHeaders.unshift('Contact: ' + this._contact);
+
+      // Determine incoming media from incoming SDP offer (if any).
+      var sdp = request.parseSDP();
+
+      // Make sure sdp.media is an array, not the case if there is only one media.
+      if (!Array.isArray(sdp.media)) {
+        sdp.media = [sdp.media];
+      }
+
+      // Go through all medias in SDP to find offered capabilities to answer with.
+      var _iteratorNormalCompletion4 = true;
+      var _didIteratorError4 = false;
+      var _iteratorError4 = undefined;
+
+      try {
+        for (var _iterator4 = sdp.media[Symbol.iterator](), _step4; !(_iteratorNormalCompletion4 = (_step4 = _iterator4.next()).done); _iteratorNormalCompletion4 = true) {
+          var m = _step4.value;
+
+          if (m.type === 'audio') {
+            peerHasAudioLine = true;
+            if (!m.direction || m.direction === 'sendrecv') {
+              peerOffersFullAudio = true;
+            }
+          }
+          if (m.type === 'video') {
+            peerHasVideoLine = true;
+            if (!m.direction || m.direction === 'sendrecv') {
+              peerOffersFullVideo = true;
+            }
+          }
+        }
+
+        // Remove audio from mediaStream if suggested by mediaConstraints.
+      } catch (err) {
+        _didIteratorError4 = true;
+        _iteratorError4 = err;
+      } finally {
+        try {
+          if (!_iteratorNormalCompletion4 && _iterator4.return) {
+            _iterator4.return();
+          }
+        } finally {
+          if (_didIteratorError4) {
+            throw _iteratorError4;
+          }
+        }
+      }
+
+      if (mediaStream && mediaConstraints.audio === false) {
+        tracks = mediaStream.getAudioTracks();
+        var _iteratorNormalCompletion5 = true;
+        var _didIteratorError5 = false;
+        var _iteratorError5 = undefined;
+
+        try {
+          for (var _iterator5 = tracks[Symbol.iterator](), _step5; !(_iteratorNormalCompletion5 = (_step5 = _iterator5.next()).done); _iteratorNormalCompletion5 = true) {
+            var track = _step5.value;
+
+            mediaStream.removeTrack(track);
+          }
+        } catch (err) {
+          _didIteratorError5 = true;
+          _iteratorError5 = err;
+        } finally {
+          try {
+            if (!_iteratorNormalCompletion5 && _iterator5.return) {
+              _iterator5.return();
+            }
+          } finally {
+            if (_didIteratorError5) {
+              throw _iteratorError5;
+            }
+          }
+        }
+      }
+
+      // Remove video from mediaStream if suggested by mediaConstraints.
+      if (mediaStream && mediaConstraints.video === false) {
+        tracks = mediaStream.getVideoTracks();
+        var _iteratorNormalCompletion6 = true;
+        var _didIteratorError6 = false;
+        var _iteratorError6 = undefined;
+
+        try {
+          for (var _iterator6 = tracks[Symbol.iterator](), _step6; !(_iteratorNormalCompletion6 = (_step6 = _iterator6.next()).done); _iteratorNormalCompletion6 = true) {
+            var _track2 = _step6.value;
+
+            mediaStream.removeTrack(_track2);
+          }
+        } catch (err) {
+          _didIteratorError6 = true;
+          _iteratorError6 = err;
+        } finally {
+          try {
+            if (!_iteratorNormalCompletion6 && _iterator6.return) {
+              _iterator6.return();
+            }
+          } finally {
+            if (_didIteratorError6) {
+              throw _iteratorError6;
+            }
+          }
+        }
+      }
+
+      // Set audio constraints based on incoming stream if not supplied.
+      if (!mediaStream && mediaConstraints.audio === undefined) {
+        mediaConstraints.audio = peerOffersFullAudio;
+      }
+
+      // Set video constraints based on incoming stream if not supplied.
+      if (!mediaStream && mediaConstraints.video === undefined) {
+        mediaConstraints.video = peerOffersFullVideo;
+      }
+
+      // Don't ask for audio if the incoming offer has no audio section.
+      if (!mediaStream && !peerHasAudioLine) {
+        mediaConstraints.audio = false;
+      }
+
+      // Don't ask for video if the incoming offer has no video section.
+      if (!mediaStream && !peerHasVideoLine) {
+        mediaConstraints.video = false;
+      }
+
+      // Create a new RTCPeerConnection instance.
+      // TODO: This may throw an error, should react.
+      var existingRTCConnection = true;
+      debug('Answering call... creating RTC Connection...');
+      if (!this._connection) {
+        debug('RTC Connection doesn\'t exist, creating a new one...');
+        existingRTCConnection = false;
+        this._createRTCConnection(pcConfig, rtcConstraints);
+      }
+
+      Promise.resolve()
+      // Handle local MediaStream.
+      .then(function () {
+        if (!existingRTCConnection) {
+          debug('No RTC Connection exists so running media stream discovery code...');
+          // A local MediaStream is given, use it.
+          if (mediaStream) {
+            debug('Short circuited mediaStream', mediaStream);
+            return mediaStream;
+          }
+
+          // Audio and/or video requested, prompt getUserMedia.
+          else if (mediaConstraints.audio || mediaConstraints.video) {
+              _this4._localMediaStreamLocallyGenerated = true;
+              debug('About to getUserMedia for stream...');
+              return navigator.mediaDevices.getUserMedia(mediaConstraints).catch(function (error) {
+                if (_this4._status === C.STATUS_TERMINATED) {
+                  throw new Error('terminated');
+                }
+
+                request.reply(480);
+                _this4._failed('local', null, JsSIP_C.causes.USER_DENIED_MEDIA_ACCESS);
+
+                debugerror('emit "getusermediafailed" [error:%o]', error);
+
+                _this4.emit('getusermediafailed', error);
+
+                throw new Error('getUserMedia() failed');
+              });
+            }
+        }
+        debug('RTC Connection exists so NOT running media stream discovery code...');
+      })
+      // Attach MediaStream to RTCPeerconnection.
+      .then(function (stream) {
+        if (!existingRTCConnection) {
+          debug('No RTC Connection exists so running media stream addition code...');
+          debug('Has stream!', stream);
+          if (_this4._status === C.STATUS_TERMINATED) {
+            throw new Error('terminated');
+          }
+
+          _this4._localMediaStream = stream;
+          if (stream) {
+            debug('Adding stream to rtc peer connection...');
+            debug('Trying to add track instead...');
+            _this4._connection.addStream(stream);
+          }
+        }
+        debug('RTC Connection exists so NOT running media stream addition code...');
+      })
+      // Set remote description.
+      .then(function () {
+        if (!existingRTCConnection) {
+          debug('No RTC Connection exists so running the setRemoteDescription code...');
+          if (_this4._late_sdp) {
+            return;
+          }
+
+          var e = { originator: 'remote', type: 'offer', sdp: request.body };
+
+          debug('emit "sdp"');
+          _this4.emit('sdp', e);
+
+          var offer = new RTCSessionDescription({ type: 'offer', sdp: e.sdp });
+
+          _this4._connectionPromiseQueue = _this4._connectionPromiseQueue.then(function () {
+            return _this4._connection.setRemoteDescription(offer);
+          }).catch(function (error) {
+            request.reply(488);
+
+            _this4._failed('system', null, JsSIP_C.causes.WEBRTC_ERROR);
+
+            debugerror('emit "peerconnection:setremotedescriptionfailed" [error:%o]', error);
+
+            _this4.emit('peerconnection:setremotedescriptionfailed', error);
+
+            throw new Error('peerconnection.setRemoteDescription() failed');
+          });
+
+          return _this4._connectionPromiseQueue;
+        }
+        debug('RTC Connection exists so NOT running the setRemoteDescription code...');
+        return Promise.resolve();
+      })
+      // Create local description.
+      .then(function () {
+        if (!existingRTCConnection) {
+          debug('No RTC Connection exists so running the createLocalDescription code...');
+          if (_this4._status === C.STATUS_TERMINATED) {
+            throw new Error('terminated');
+          }
+
+          // TODO: Is this event already useful?
+          // Duplicate this down to always happen...
+          _this4._connecting(request);
+
+          if (!_this4._late_sdp) {
+            return _this4._createLocalDescription('answer', rtcAnswerConstraints).catch(function () {
+              request.reply(500);
+
+              throw new Error('_createLocalDescription() failed');
+            });
+          } else {
+            return _this4._createLocalDescription('offer', _this4._rtcOfferConstraints).catch(function () {
+              request.reply(500);
+
+              throw new Error('_createLocalDescription() failed');
+            });
+          }
+        }
+        debug('RTC Connection exists so NOT running the createLocalDescription code...');
+        _this4._connecting(request);
+        return _this4._connection.localDescription.sdp;
       })
       // Send reply.
       .then(function (desc) {
-        if (_this3._status === C.STATUS_TERMINATED) {
+        if (_this4._status === C.STATUS_TERMINATED) {
           throw new Error('terminated');
         }
 
-        _this3._handleSessionTimersInIncomingRequest(request, extraHeaders);
+        _this4._handleSessionTimersInIncomingRequest(request, extraHeaders);
 
         request.reply(200, null, extraHeaders, desc, function () {
-          _this3._status = C.STATUS_WAITING_FOR_ACK;
+          _this4._status = C.STATUS_WAITING_FOR_ACK;
 
-          _this3._setInvite2xxTimer(request, desc);
-          _this3._setACKTimer();
-          _this3._accepted('local');
+          _this4._setInvite2xxTimer(request, desc);
+          _this4._setACKTimer();
+          _this4._accepted('local');
         }, function () {
-          _this3._failed('system', null, JsSIP_C.causes.CONNECTION_ERROR);
+          _this4._failed('system', null, JsSIP_C.causes.CONNECTION_ERROR);
         });
       }).catch(function (error) {
-        if (_this3._status === C.STATUS_TERMINATED) {
+        if (_this4._status === C.STATUS_TERMINATED) {
           return;
         }
 
@@ -731,7 +1037,7 @@ module.exports = function (_EventEmitter) {
   }, {
     key: 'terminate',
     value: function terminate() {
-      var _this4 = this;
+      var _this5 = this;
 
       var options = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {};
 
@@ -820,7 +1126,7 @@ module.exports = function (_EventEmitter) {
               var method = _ref.method;
 
               if (method === JsSIP_C.ACK) {
-                _this4.sendRequest(JsSIP_C.BYE, {
+                _this5.sendRequest(JsSIP_C.BYE, {
                   extraHeaders: extraHeaders,
                   body: body
                 });
@@ -830,8 +1136,8 @@ module.exports = function (_EventEmitter) {
 
             // .., or when the INVITE transaction times out
             this._request.server_transaction.on('stateChanged', function () {
-              if (_this4._request.server_transaction.state === Transactions.C.STATUS_TERMINATED) {
-                _this4.sendRequest(JsSIP_C.BYE, {
+              if (_this5._request.server_transaction.state === Transactions.C.STATUS_TERMINATED) {
+                _this5.sendRequest(JsSIP_C.BYE, {
                   extraHeaders: extraHeaders,
                   body: body
                 });
@@ -927,7 +1233,7 @@ module.exports = function (_EventEmitter) {
       _sendDTMF.call(this);
 
       function _sendDTMF() {
-        var _this5 = this;
+        var _this6 = this;
 
         var timeout = void 0;
 
@@ -949,7 +1255,7 @@ module.exports = function (_EventEmitter) {
 
           options.eventHandlers = {
             onFailed: function onFailed() {
-              _this5._tones = null;
+              _this6._tones = null;
             }
           };
           dtmf.send(tone, options);
@@ -1058,7 +1364,7 @@ module.exports = function (_EventEmitter) {
   }, {
     key: 'hold',
     value: function hold() {
-      var _this6 = this;
+      var _this7 = this;
 
       var options = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {};
       var done = arguments[1];
@@ -1087,7 +1393,7 @@ module.exports = function (_EventEmitter) {
           }
         },
         failed: function failed() {
-          _this6.terminate({
+          _this7.terminate({
             cause: JsSIP_C.causes.WEBRTC_ERROR,
             status_code: 500,
             reason_phrase: 'Hold Failed'
@@ -1113,7 +1419,7 @@ module.exports = function (_EventEmitter) {
   }, {
     key: 'unhold',
     value: function unhold() {
-      var _this7 = this;
+      var _this8 = this;
 
       var options = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {};
       var done = arguments[1];
@@ -1142,7 +1448,7 @@ module.exports = function (_EventEmitter) {
           }
         },
         failed: function failed() {
-          _this7.terminate({
+          _this8.terminate({
             cause: JsSIP_C.causes.WEBRTC_ERROR,
             status_code: 500,
             reason_phrase: 'Unhold Failed'
@@ -1168,7 +1474,7 @@ module.exports = function (_EventEmitter) {
   }, {
     key: 'renegotiate',
     value: function renegotiate() {
-      var _this8 = this;
+      var _this9 = this;
 
       var options = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {};
       var done = arguments[1];
@@ -1192,7 +1498,7 @@ module.exports = function (_EventEmitter) {
           }
         },
         failed: function failed() {
-          _this8.terminate({
+          _this9.terminate({
             cause: JsSIP_C.causes.WEBRTC_ERROR,
             status_code: 500,
             reason_phrase: 'Media Renegotiation Failed'
@@ -1227,7 +1533,7 @@ module.exports = function (_EventEmitter) {
   }, {
     key: 'refer',
     value: function refer(target, options) {
-      var _this9 = this;
+      var _this10 = this;
 
       debug('refer()');
 
@@ -1254,13 +1560,13 @@ module.exports = function (_EventEmitter) {
 
       // Listen for ending events so we can remove it from the map.
       referSubscriber.on('requestFailed', function () {
-        delete _this9._referSubscribers[id];
+        delete _this10._referSubscribers[id];
       });
       referSubscriber.on('accepted', function () {
-        delete _this9._referSubscribers[id];
+        delete _this10._referSubscribers[id];
       });
       referSubscriber.on('failed', function () {
-        delete _this9._referSubscribers[id];
+        delete _this10._referSubscribers[id];
       });
 
       return referSubscriber;
@@ -1285,7 +1591,7 @@ module.exports = function (_EventEmitter) {
   }, {
     key: 'receiveRequest',
     value: function receiveRequest(request) {
-      var _this10 = this;
+      var _this11 = this;
 
       debug('receiveRequest()');
 
@@ -1337,19 +1643,19 @@ module.exports = function (_EventEmitter) {
               var answer = new RTCSessionDescription({ type: 'answer', sdp: e.sdp });
 
               this._connectionPromiseQueue = this._connectionPromiseQueue.then(function () {
-                return _this10._connection.setRemoteDescription(answer);
+                return _this11._connection.setRemoteDescription(answer);
               }).then(function () {
-                if (!_this10._is_confirmed) {
-                  _this10._confirmed('remote', request);
+                if (!_this11._is_confirmed) {
+                  _this11._confirmed('remote', request);
                 }
               }).catch(function (error) {
-                _this10.terminate({
+                _this11.terminate({
                   cause: JsSIP_C.causes.BAD_MEDIA_DESCRIPTION,
                   status_code: 488
                 });
 
                 debugerror('emit "peerconnection:setremotedescriptionfailed" [error:%o]', error);
-                _this10.emit('peerconnection:setremotedescriptionfailed', error);
+                _this11.emit('peerconnection:setremotedescriptionfailed', error);
               });
             } else if (!this._is_confirmed) {
               this._confirmed('remote', request);
@@ -1621,31 +1927,31 @@ module.exports = function (_EventEmitter) {
   }, {
     key: '_setACKTimer',
     value: function _setACKTimer() {
-      var _this11 = this;
+      var _this12 = this;
 
       this._timers.ackTimer = setTimeout(function () {
-        if (_this11._status === C.STATUS_WAITING_FOR_ACK) {
+        if (_this12._status === C.STATUS_WAITING_FOR_ACK) {
           debug('no ACK received, terminating the session');
 
-          clearTimeout(_this11._timers.invite2xxTimer);
-          _this11.sendRequest(JsSIP_C.BYE);
-          _this11._ended('remote', null, JsSIP_C.causes.NO_ACK);
+          clearTimeout(_this12._timers.invite2xxTimer);
+          _this12.sendRequest(JsSIP_C.BYE);
+          _this12._ended('remote', null, JsSIP_C.causes.NO_ACK);
         }
       }, Timers.TIMER_H);
     }
   }, {
     key: '_createRTCConnection',
     value: function _createRTCConnection(pcConfig, rtcConstraints) {
-      var _this12 = this;
+      var _this13 = this;
 
       this._connection = new RTCPeerConnection(pcConfig, rtcConstraints);
 
       this._connection.addEventListener('iceconnectionstatechange', function () {
-        var state = _this12._connection.iceConnectionState;
+        var state = _this13._connection.iceConnectionState;
 
         // TODO: Do more with different states.
         if (state === 'failed') {
-          _this12.terminate({
+          _this13.terminate({
             cause: JsSIP_C.causes.RTP_TIMEOUT,
             status_code: 408,
             reason_phrase: JsSIP_C.causes.RTP_TIMEOUT
@@ -1662,7 +1968,7 @@ module.exports = function (_EventEmitter) {
   }, {
     key: '_createLocalDescription',
     value: function _createLocalDescription(type, constraints) {
-      var _this13 = this;
+      var _this14 = this;
 
       debug('createLocalDescription()');
 
@@ -1679,7 +1985,7 @@ module.exports = function (_EventEmitter) {
           return connection.createOffer(constraints).catch(function (error) {
             debugerror('emit "peerconnection:createofferfailed" [error:%o]', error);
 
-            _this13.emit('peerconnection:createofferfailed', error);
+            _this14.emit('peerconnection:createofferfailed', error);
 
             return Promise.reject(error);
           });
@@ -1687,7 +1993,7 @@ module.exports = function (_EventEmitter) {
           return connection.createAnswer(constraints).catch(function (error) {
             debugerror('emit "peerconnection:createanswerfailed" [error:%o]', error);
 
-            _this13.emit('peerconnection:createanswerfailed', error);
+            _this14.emit('peerconnection:createanswerfailed', error);
 
             return Promise.reject(error);
           });
@@ -1696,24 +2002,24 @@ module.exports = function (_EventEmitter) {
       // Set local description.
       .then(function (desc) {
         return connection.setLocalDescription(desc).catch(function (error) {
-          _this13._rtcReady = true;
+          _this14._rtcReady = true;
 
           debugerror('emit "peerconnection:setlocaldescriptionfailed" [error:%o]', error);
 
-          _this13.emit('peerconnection:setlocaldescriptionfailed', error);
+          _this14.emit('peerconnection:setlocaldescriptionfailed', error);
 
           return Promise.reject(error);
         });
       }).then(function () {
         // Resolve right away if 'pc.iceGatheringState' is 'complete'.
         if (connection.iceGatheringState === 'complete') {
-          _this13._rtcReady = true;
+          _this14._rtcReady = true;
 
           var e = { originator: 'local', type: type, sdp: connection.localDescription.sdp };
 
           debug('emit "sdp"');
 
-          _this13.emit('sdp', e);
+          _this14.emit('sdp', e);
 
           return Promise.resolve(e.sdp);
         }
@@ -1727,13 +2033,13 @@ module.exports = function (_EventEmitter) {
             connection.removeEventListener('icecandidate', listener);
 
             finished = true;
-            _this13._rtcReady = true;
+            _this14._rtcReady = true;
 
             var e = { originator: 'local', type: type, sdp: connection.localDescription.sdp };
 
             debug('emit "sdp"');
 
-            _this13.emit('sdp', e);
+            _this14.emit('sdp', e);
 
             resolve(e.sdp);
           };
@@ -1742,7 +2048,7 @@ module.exports = function (_EventEmitter) {
             var candidate = event.candidate;
 
             if (candidate) {
-              _this13.emit('icecandidate', {
+              _this14.emit('icecandidate', {
                 candidate: candidate,
                 ready: ready
               });
@@ -1825,7 +2131,7 @@ module.exports = function (_EventEmitter) {
   }, {
     key: '_receiveReinvite',
     value: function _receiveReinvite(request) {
-      var _this14 = this;
+      var _this15 = this;
 
       debug('receiveReinvite()');
 
@@ -1872,9 +2178,9 @@ module.exports = function (_EventEmitter) {
         this._late_sdp = true;
 
         this._connectionPromiseQueue = this._connectionPromiseQueue.then(function () {
-          return _this14._createLocalDescription('offer', _this14._rtcOfferConstraints);
+          return _this15._createLocalDescription('offer', _this15._rtcOfferConstraints);
         }).then(function (sdp) {
-          sendAnswer.call(_this14, sdp);
+          sendAnswer.call(_this15, sdp);
         }).catch(function () {
           request.reply(500);
         });
@@ -1893,17 +2199,17 @@ module.exports = function (_EventEmitter) {
       this._processInDialogSdpOffer(request)
       // Send answer.
       .then(function (desc) {
-        if (_this14._status === C.STATUS_TERMINATED) {
+        if (_this15._status === C.STATUS_TERMINATED) {
           return;
         }
 
-        sendAnswer.call(_this14, desc);
+        sendAnswer.call(_this15, desc);
       }).catch(function (error) {
         debugerror(error);
       });
 
       function sendAnswer(desc) {
-        var _this15 = this;
+        var _this16 = this;
 
         var extraHeaders = ['Contact: ' + this._contact];
 
@@ -1914,9 +2220,9 @@ module.exports = function (_EventEmitter) {
         }
 
         request.reply(200, null, extraHeaders, desc, function () {
-          _this15._status = C.STATUS_WAITING_FOR_ACK;
-          _this15._setInvite2xxTimer(request, desc);
-          _this15._setACKTimer();
+          _this16._status = C.STATUS_WAITING_FOR_ACK;
+          _this16._setInvite2xxTimer(request, desc);
+          _this16._setACKTimer();
         });
 
         // If callback is given execute it.
@@ -1933,7 +2239,7 @@ module.exports = function (_EventEmitter) {
   }, {
     key: '_receiveUpdate',
     value: function _receiveUpdate(request) {
-      var _this16 = this;
+      var _this17 = this;
 
       debug('receiveUpdate()');
 
@@ -1990,11 +2296,11 @@ module.exports = function (_EventEmitter) {
       this._processInDialogSdpOffer(request)
       // Send answer.
       .then(function (desc) {
-        if (_this16._status === C.STATUS_TERMINATED) {
+        if (_this17._status === C.STATUS_TERMINATED) {
           return;
         }
 
-        sendAnswer.call(_this16, desc);
+        sendAnswer.call(_this17, desc);
       }).catch(function (error) {
         debugerror(error);
       });
@@ -2015,7 +2321,7 @@ module.exports = function (_EventEmitter) {
   }, {
     key: '_processInDialogSdpOffer',
     value: function _processInDialogSdpOffer(request) {
-      var _this17 = this;
+      var _this18 = this;
 
       debug('_processInDialogSdpOffer()');
 
@@ -2023,13 +2329,13 @@ module.exports = function (_EventEmitter) {
 
       var hold = false;
 
-      var _iteratorNormalCompletion4 = true;
-      var _didIteratorError4 = false;
-      var _iteratorError4 = undefined;
+      var _iteratorNormalCompletion7 = true;
+      var _didIteratorError7 = false;
+      var _iteratorError7 = undefined;
 
       try {
-        for (var _iterator4 = sdp.media[Symbol.iterator](), _step4; !(_iteratorNormalCompletion4 = (_step4 = _iterator4.next()).done); _iteratorNormalCompletion4 = true) {
-          var m = _step4.value;
+        for (var _iterator7 = sdp.media[Symbol.iterator](), _step7; !(_iteratorNormalCompletion7 = (_step7 = _iterator7.next()).done); _iteratorNormalCompletion7 = true) {
+          var m = _step7.value;
 
           if (holdMediaTypes.indexOf(m.type) === -1) {
             continue;
@@ -2047,16 +2353,16 @@ module.exports = function (_EventEmitter) {
             }
         }
       } catch (err) {
-        _didIteratorError4 = true;
-        _iteratorError4 = err;
+        _didIteratorError7 = true;
+        _iteratorError7 = err;
       } finally {
         try {
-          if (!_iteratorNormalCompletion4 && _iterator4.return) {
-            _iterator4.return();
+          if (!_iteratorNormalCompletion7 && _iterator7.return) {
+            _iterator7.return();
           }
         } finally {
-          if (_didIteratorError4) {
-            throw _iteratorError4;
+          if (_didIteratorError7) {
+            throw _iteratorError7;
           }
         }
       }
@@ -2071,38 +2377,38 @@ module.exports = function (_EventEmitter) {
       this._connectionPromiseQueue = this._connectionPromiseQueue
       // Set remote description.
       .then(function () {
-        if (_this17._status === C.STATUS_TERMINATED) {
+        if (_this18._status === C.STATUS_TERMINATED) {
           throw new Error('terminated');
         }
 
-        return _this17._connection.setRemoteDescription(offer).catch(function (error) {
+        return _this18._connection.setRemoteDescription(offer).catch(function (error) {
           request.reply(488);
           debugerror('emit "peerconnection:setremotedescriptionfailed" [error:%o]', error);
 
-          _this17.emit('peerconnection:setremotedescriptionfailed', error);
+          _this18.emit('peerconnection:setremotedescriptionfailed', error);
 
           throw new Error('peerconnection.setRemoteDescription() failed');
         });
       }).then(function () {
-        if (_this17._status === C.STATUS_TERMINATED) {
+        if (_this18._status === C.STATUS_TERMINATED) {
           throw new Error('terminated');
         }
 
-        if (_this17._remoteHold === true && hold === false) {
-          _this17._remoteHold = false;
-          _this17._onunhold('remote');
-        } else if (_this17._remoteHold === false && hold === true) {
-          _this17._remoteHold = true;
-          _this17._onhold('remote');
+        if (_this18._remoteHold === true && hold === false) {
+          _this18._remoteHold = false;
+          _this18._onunhold('remote');
+        } else if (_this18._remoteHold === false && hold === true) {
+          _this18._remoteHold = true;
+          _this18._onhold('remote');
         }
       })
       // Create local description.
       .then(function () {
-        if (_this17._status === C.STATUS_TERMINATED) {
+        if (_this18._status === C.STATUS_TERMINATED) {
           throw new Error('terminated');
         }
 
-        return _this17._createLocalDescription('answer', _this17._rtcAnswerConstraints).catch(function () {
+        return _this18._createLocalDescription('answer', _this18._rtcAnswerConstraints).catch(function () {
           request.reply(500);
 
           throw new Error('_createLocalDescription() failed');
@@ -2119,7 +2425,7 @@ module.exports = function (_EventEmitter) {
   }, {
     key: '_receiveRefer',
     value: function _receiveRefer(request) {
-      var _this18 = this;
+      var _this19 = this;
 
       debug('receiveRefer()');
 
@@ -2148,10 +2454,10 @@ module.exports = function (_EventEmitter) {
       this.emit('refer', {
         request: request,
         accept: function accept(initCallback, options) {
-          _accept.call(_this18, initCallback, options);
+          _accept.call(_this19, initCallback, options);
         },
         reject: function reject() {
-          _reject.call(_this18);
+          _reject.call(_this19);
         }
       });
 
@@ -2261,12 +2567,12 @@ module.exports = function (_EventEmitter) {
   }, {
     key: '_receiveReplaces',
     value: function _receiveReplaces(request) {
-      var _this20 = this;
+      var _this21 = this;
 
       debug('receiveReplaces()');
 
       function _accept2(initCallback) {
-        var _this19 = this;
+        var _this20 = this;
 
         if (this._status !== C.STATUS_WAITING_FOR_ACK && this._status !== C.STATUS_CONFIRMED) {
           return false;
@@ -2276,7 +2582,7 @@ module.exports = function (_EventEmitter) {
 
         // Terminate the current session when the new one is confirmed.
         session.on('confirmed', function () {
-          _this19.terminate();
+          _this20.terminate();
         });
 
         session.init_incoming(request, initCallback);
@@ -2291,10 +2597,10 @@ module.exports = function (_EventEmitter) {
       this.emit('replaces', {
         request: request,
         accept: function accept(initCallback) {
-          _accept2.call(_this20, initCallback);
+          _accept2.call(_this21, initCallback);
         },
         reject: function reject() {
-          _reject2.call(_this20);
+          _reject2.call(_this21);
         }
       });
     }
@@ -2306,21 +2612,21 @@ module.exports = function (_EventEmitter) {
   }, {
     key: '_sendInitialRequest',
     value: function _sendInitialRequest(mediaConstraints, rtcOfferConstraints, mediaStream) {
-      var _this21 = this;
+      var _this22 = this;
 
       var request_sender = new RequestSender(this._ua, this._request, {
         onRequestTimeout: function onRequestTimeout() {
-          _this21.onRequestTimeout();
+          _this22.onRequestTimeout();
         },
         onTransportError: function onTransportError() {
-          _this21.onTransportError();
+          _this22.onTransportError();
         },
         // Update the request on authentication.
         onAuthenticated: function onAuthenticated(request) {
-          _this21._request = request;
+          _this22._request = request;
         },
         onReceiveResponse: function onReceiveResponse(response) {
-          _this21._receiveInviteResponse(response);
+          _this22._receiveInviteResponse(response);
         }
       });
 
@@ -2335,59 +2641,59 @@ module.exports = function (_EventEmitter) {
         }
         // Request for user media access.
         else if (mediaConstraints.audio || mediaConstraints.video) {
-            _this21._localMediaStreamLocallyGenerated = true;
+            _this22._localMediaStreamLocallyGenerated = true;
 
             return navigator.mediaDevices.getUserMedia(mediaConstraints).catch(function (error) {
-              if (_this21._status === C.STATUS_TERMINATED) {
+              if (_this22._status === C.STATUS_TERMINATED) {
                 throw new Error('terminated');
               }
 
-              _this21._failed('local', null, JsSIP_C.causes.USER_DENIED_MEDIA_ACCESS);
+              _this22._failed('local', null, JsSIP_C.causes.USER_DENIED_MEDIA_ACCESS);
 
               debugerror('emit "getusermediafailed" [error:%o]', error);
 
-              _this21.emit('getusermediafailed');
+              _this22.emit('getusermediafailed');
 
               throw error;
             });
           }
       }).then(function (stream) {
-        if (_this21._status === C.STATUS_TERMINATED) {
+        if (_this22._status === C.STATUS_TERMINATED) {
           throw new Error('terminated');
         }
 
-        _this21._localMediaStream = stream;
+        _this22._localMediaStream = stream;
 
         if (stream) {
-          _this21._connection.addStream(stream);
+          _this22._connection.addStream(stream);
         }
 
         // TODO: should this be triggered here?
-        _this21._connecting(_this21._request);
+        _this22._connecting(_this22._request);
 
-        return _this21._createLocalDescription('offer', rtcOfferConstraints).catch(function (error) {
-          _this21._failed('local', null, JsSIP_C.causes.WEBRTC_ERROR);
+        return _this22._createLocalDescription('offer', rtcOfferConstraints).catch(function (error) {
+          _this22._failed('local', null, JsSIP_C.causes.WEBRTC_ERROR);
 
           throw error;
         });
       }).then(function (desc) {
-        if (_this21._is_canceled || _this21._status === C.STATUS_TERMINATED) {
+        if (_this22._is_canceled || _this22._status === C.STATUS_TERMINATED) {
           throw new Error('terminated');
         }
 
-        _this21._request.body = desc;
-        _this21._status = C.STATUS_INVITE_SENT;
+        _this22._request.body = desc;
+        _this22._status = C.STATUS_INVITE_SENT;
 
-        debug('emit "sending" [request:%o]', _this21._request);
+        debug('emit "sending" [request:%o]', _this22._request);
 
         // Emit 'sending' so the app can mangle the body before the request is sent.
-        _this21.emit('sending', {
-          request: _this21._request
+        _this22.emit('sending', {
+          request: _this22._request
         });
 
         request_sender.send();
       }).catch(function (error) {
-        if (_this21._status === C.STATUS_TERMINATED) {
+        if (_this22._status === C.STATUS_TERMINATED) {
           return;
         }
 
@@ -2402,7 +2708,7 @@ module.exports = function (_EventEmitter) {
   }, {
     key: '_receiveInviteResponse',
     value: function _receiveInviteResponse(response) {
-      var _this22 = this;
+      var _this23 = this;
 
       debug('receiveInviteResponse()');
 
@@ -2487,11 +2793,11 @@ module.exports = function (_EventEmitter) {
             var answer = new RTCSessionDescription({ type: 'answer', sdp: e.sdp });
 
             this._connectionPromiseQueue = this._connectionPromiseQueue.then(function () {
-              return _this22._connection.setRemoteDescription(answer);
+              return _this23._connection.setRemoteDescription(answer);
             }).catch(function (error) {
               debugerror('emit "peerconnection:setremotedescriptionfailed" [error:%o]', error);
 
-              _this22.emit('peerconnection:setremotedescriptionfailed', error);
+              _this23.emit('peerconnection:setremotedescriptionfailed', error);
             });
             break;
           }
@@ -2521,29 +2827,29 @@ module.exports = function (_EventEmitter) {
             this._connectionPromiseQueue = this._connectionPromiseQueue.then(function () {
               // Be ready for 200 with SDP after a 180/183 with SDP.
               // We created a SDP 'answer' for it, so check the current signaling state.
-              if (_this22._connection.signalingState === 'stable') {
-                return _this22._connection.createOffer().then(function (offer) {
-                  return _this22._connection.setLocalDescription(offer);
+              if (_this23._connection.signalingState === 'stable') {
+                return _this23._connection.createOffer().then(function (offer) {
+                  return _this23._connection.setLocalDescription(offer);
                 }).catch(function (error) {
-                  _this22._acceptAndTerminate(response, 500, error.toString());
-                  _this22._failed('local', response, JsSIP_C.causes.WEBRTC_ERROR);
+                  _this23._acceptAndTerminate(response, 500, error.toString());
+                  _this23._failed('local', response, JsSIP_C.causes.WEBRTC_ERROR);
                 });
               }
             }).then(function () {
-              _this22._connection.setRemoteDescription(_answer).then(function () {
+              _this23._connection.setRemoteDescription(_answer).then(function () {
                 // Handle Session Timers.
-                _this22._handleSessionTimersInIncomingResponse(response);
+                _this23._handleSessionTimersInIncomingResponse(response);
 
-                _this22._accepted('remote', response);
-                _this22.sendRequest(JsSIP_C.ACK);
-                _this22._confirmed('local', null);
+                _this23._accepted('remote', response);
+                _this23.sendRequest(JsSIP_C.ACK);
+                _this23._confirmed('local', null);
               }).catch(function (error) {
-                _this22._acceptAndTerminate(response, 488, 'Not Acceptable Here');
-                _this22._failed('remote', response, JsSIP_C.causes.BAD_MEDIA_DESCRIPTION);
+                _this23._acceptAndTerminate(response, 488, 'Not Acceptable Here');
+                _this23._failed('remote', response, JsSIP_C.causes.BAD_MEDIA_DESCRIPTION);
 
                 debugerror('emit "peerconnection:setremotedescriptionfailed" [error:%o]', error);
 
-                _this22.emit('peerconnection:setremotedescriptionfailed', error);
+                _this23.emit('peerconnection:setremotedescriptionfailed', error);
               });
             });
             break;
@@ -2565,7 +2871,7 @@ module.exports = function (_EventEmitter) {
   }, {
     key: '_sendReinvite',
     value: function _sendReinvite() {
-      var _this23 = this;
+      var _this24 = this;
 
       var options = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {};
 
@@ -2586,29 +2892,29 @@ module.exports = function (_EventEmitter) {
       }
 
       this._connectionPromiseQueue = this._connectionPromiseQueue.then(function () {
-        return _this23._createLocalDescription('offer', rtcOfferConstraints);
+        return _this24._createLocalDescription('offer', rtcOfferConstraints);
       }).then(function (sdp) {
-        sdp = _this23._mangleOffer(sdp);
+        sdp = _this24._mangleOffer(sdp);
 
-        _this23.sendRequest(JsSIP_C.INVITE, {
+        _this24.sendRequest(JsSIP_C.INVITE, {
           extraHeaders: extraHeaders,
           body: sdp,
           eventHandlers: {
             onSuccessResponse: function onSuccessResponse(response) {
-              onSucceeded.call(_this23, response);
+              onSucceeded.call(_this24, response);
               succeeded = true;
             },
             onErrorResponse: function onErrorResponse(response) {
-              onFailed.call(_this23, response);
+              onFailed.call(_this24, response);
             },
             onTransportError: function onTransportError() {
-              _this23.onTransportError(); // Do nothing because session ends.
+              _this24.onTransportError(); // Do nothing because session ends.
             },
             onRequestTimeout: function onRequestTimeout() {
-              _this23.onRequestTimeout(); // Do nothing because session ends.
+              _this24.onRequestTimeout(); // Do nothing because session ends.
             },
             onDialogError: function onDialogError() {
-              _this23.onDialogError(); // Do nothing because session ends.
+              _this24.onDialogError(); // Do nothing because session ends.
             }
           }
         });
@@ -2617,7 +2923,7 @@ module.exports = function (_EventEmitter) {
       });
 
       function onSucceeded(response) {
-        var _this24 = this;
+        var _this25 = this;
 
         if (this._status === C.STATUS_TERMINATED) {
           return;
@@ -2652,17 +2958,17 @@ module.exports = function (_EventEmitter) {
         var answer = new RTCSessionDescription({ type: 'answer', sdp: e.sdp });
 
         this._connectionPromiseQueue = this._connectionPromiseQueue.then(function () {
-          return _this24._connection.setRemoteDescription(answer);
+          return _this25._connection.setRemoteDescription(answer);
         }).then(function () {
           if (eventHandlers.succeeded) {
             eventHandlers.succeeded(response);
           }
         }).catch(function (error) {
-          onFailed.call(_this24);
+          onFailed.call(_this25);
 
           debugerror('emit "peerconnection:setremotedescriptionfailed" [error:%o]', error);
 
-          _this24.emit('peerconnection:setremotedescriptionfailed', error);
+          _this25.emit('peerconnection:setremotedescriptionfailed', error);
         });
       }
 
@@ -2680,7 +2986,7 @@ module.exports = function (_EventEmitter) {
   }, {
     key: '_sendUpdate',
     value: function _sendUpdate() {
-      var _this25 = this;
+      var _this26 = this;
 
       var options = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : {};
 
@@ -2704,34 +3010,34 @@ module.exports = function (_EventEmitter) {
         extraHeaders.push('Content-Type: application/sdp');
 
         this._connectionPromiseQueue = this._connectionPromiseQueue.then(function () {
-          return _this25._createLocalDescription('offer', rtcOfferConstraints);
+          return _this26._createLocalDescription('offer', rtcOfferConstraints);
         }).then(function (sdp) {
-          sdp = _this25._mangleOffer(sdp);
+          sdp = _this26._mangleOffer(sdp);
 
-          _this25.sendRequest(JsSIP_C.UPDATE, {
+          _this26.sendRequest(JsSIP_C.UPDATE, {
             extraHeaders: extraHeaders,
             body: sdp,
             eventHandlers: {
               onSuccessResponse: function onSuccessResponse(response) {
-                onSucceeded.call(_this25, response);
+                onSucceeded.call(_this26, response);
                 succeeded = true;
               },
               onErrorResponse: function onErrorResponse(response) {
-                onFailed.call(_this25, response);
+                onFailed.call(_this26, response);
               },
               onTransportError: function onTransportError() {
-                _this25.onTransportError(); // Do nothing because session ends.
+                _this26.onTransportError(); // Do nothing because session ends.
               },
               onRequestTimeout: function onRequestTimeout() {
-                _this25.onRequestTimeout(); // Do nothing because session ends.
+                _this26.onRequestTimeout(); // Do nothing because session ends.
               },
               onDialogError: function onDialogError() {
-                _this25.onDialogError(); // Do nothing because session ends.
+                _this26.onDialogError(); // Do nothing because session ends.
               }
             }
           });
         }).catch(function () {
-          onFailed.call(_this25);
+          onFailed.call(_this26);
         });
       }
 
@@ -2741,26 +3047,26 @@ module.exports = function (_EventEmitter) {
             extraHeaders: extraHeaders,
             eventHandlers: {
               onSuccessResponse: function onSuccessResponse(response) {
-                onSucceeded.call(_this25, response);
+                onSucceeded.call(_this26, response);
               },
               onErrorResponse: function onErrorResponse(response) {
-                onFailed.call(_this25, response);
+                onFailed.call(_this26, response);
               },
               onTransportError: function onTransportError() {
-                _this25.onTransportError(); // Do nothing because session ends.
+                _this26.onTransportError(); // Do nothing because session ends.
               },
               onRequestTimeout: function onRequestTimeout() {
-                _this25.onRequestTimeout(); // Do nothing because session ends.
+                _this26.onRequestTimeout(); // Do nothing because session ends.
               },
               onDialogError: function onDialogError() {
-                _this25.onDialogError(); // Do nothing because session ends.
+                _this26.onDialogError(); // Do nothing because session ends.
               }
             }
           });
         }
 
       function onSucceeded(response) {
-        var _this26 = this;
+        var _this27 = this;
 
         if (this._status === C.STATUS_TERMINATED) {
           return;
@@ -2794,17 +3100,17 @@ module.exports = function (_EventEmitter) {
           var answer = new RTCSessionDescription({ type: 'answer', sdp: e.sdp });
 
           this._connectionPromiseQueue = this._connectionPromiseQueue.then(function () {
-            return _this26._connection.setRemoteDescription(answer);
+            return _this27._connection.setRemoteDescription(answer);
           }).then(function () {
             if (eventHandlers.succeeded) {
               eventHandlers.succeeded(response);
             }
           }).catch(function (error) {
-            onFailed.call(_this26);
+            onFailed.call(_this27);
 
             debugerror('emit "peerconnection:setremotedescriptionfailed" [error:%o]', error);
 
-            _this26.emit('peerconnection:setremotedescriptionfailed', error);
+            _this27.emit('peerconnection:setremotedescriptionfailed', error);
           });
         }
         // No SDP answer.
@@ -2860,13 +3166,13 @@ module.exports = function (_EventEmitter) {
       // Local hold.
       if (this._localHold && !this._remoteHold) {
         debug('mangleOffer() | me on hold, mangling offer');
-        var _iteratorNormalCompletion5 = true;
-        var _didIteratorError5 = false;
-        var _iteratorError5 = undefined;
+        var _iteratorNormalCompletion8 = true;
+        var _didIteratorError8 = false;
+        var _iteratorError8 = undefined;
 
         try {
-          for (var _iterator5 = sdp.media[Symbol.iterator](), _step5; !(_iteratorNormalCompletion5 = (_step5 = _iterator5.next()).done); _iteratorNormalCompletion5 = true) {
-            var m = _step5.value;
+          for (var _iterator8 = sdp.media[Symbol.iterator](), _step8; !(_iteratorNormalCompletion8 = (_step8 = _iterator8.next()).done); _iteratorNormalCompletion8 = true) {
+            var m = _step8.value;
 
             if (holdMediaTypes.indexOf(m.type) === -1) {
               continue;
@@ -2880,16 +3186,16 @@ module.exports = function (_EventEmitter) {
             }
           }
         } catch (err) {
-          _didIteratorError5 = true;
-          _iteratorError5 = err;
+          _didIteratorError8 = true;
+          _iteratorError8 = err;
         } finally {
           try {
-            if (!_iteratorNormalCompletion5 && _iterator5.return) {
-              _iterator5.return();
+            if (!_iteratorNormalCompletion8 && _iterator8.return) {
+              _iterator8.return();
             }
           } finally {
-            if (_didIteratorError5) {
-              throw _iteratorError5;
+            if (_didIteratorError8) {
+              throw _iteratorError8;
             }
           }
         }
@@ -2897,13 +3203,13 @@ module.exports = function (_EventEmitter) {
       // Local and remote hold.
       else if (this._localHold && this._remoteHold) {
           debug('mangleOffer() | both on hold, mangling offer');
-          var _iteratorNormalCompletion6 = true;
-          var _didIteratorError6 = false;
-          var _iteratorError6 = undefined;
+          var _iteratorNormalCompletion9 = true;
+          var _didIteratorError9 = false;
+          var _iteratorError9 = undefined;
 
           try {
-            for (var _iterator6 = sdp.media[Symbol.iterator](), _step6; !(_iteratorNormalCompletion6 = (_step6 = _iterator6.next()).done); _iteratorNormalCompletion6 = true) {
-              var _m = _step6.value;
+            for (var _iterator9 = sdp.media[Symbol.iterator](), _step9; !(_iteratorNormalCompletion9 = (_step9 = _iterator9.next()).done); _iteratorNormalCompletion9 = true) {
+              var _m = _step9.value;
 
               if (holdMediaTypes.indexOf(_m.type) === -1) {
                 continue;
@@ -2911,16 +3217,16 @@ module.exports = function (_EventEmitter) {
               _m.direction = 'inactive';
             }
           } catch (err) {
-            _didIteratorError6 = true;
-            _iteratorError6 = err;
+            _didIteratorError9 = true;
+            _iteratorError9 = err;
           } finally {
             try {
-              if (!_iteratorNormalCompletion6 && _iterator6.return) {
-                _iterator6.return();
+              if (!_iteratorNormalCompletion9 && _iterator9.return) {
+                _iterator9.return();
               }
             } finally {
-              if (_didIteratorError6) {
-                throw _iteratorError6;
+              if (_didIteratorError9) {
+                throw _iteratorError9;
               }
             }
           }
@@ -2928,13 +3234,13 @@ module.exports = function (_EventEmitter) {
         // Remote hold.
         else if (this._remoteHold) {
             debug('mangleOffer() | remote on hold, mangling offer');
-            var _iteratorNormalCompletion7 = true;
-            var _didIteratorError7 = false;
-            var _iteratorError7 = undefined;
+            var _iteratorNormalCompletion10 = true;
+            var _didIteratorError10 = false;
+            var _iteratorError10 = undefined;
 
             try {
-              for (var _iterator7 = sdp.media[Symbol.iterator](), _step7; !(_iteratorNormalCompletion7 = (_step7 = _iterator7.next()).done); _iteratorNormalCompletion7 = true) {
-                var _m2 = _step7.value;
+              for (var _iterator10 = sdp.media[Symbol.iterator](), _step10; !(_iteratorNormalCompletion10 = (_step10 = _iterator10.next()).done); _iteratorNormalCompletion10 = true) {
+                var _m2 = _step10.value;
 
                 if (holdMediaTypes.indexOf(_m2.type) === -1) {
                   continue;
@@ -2948,16 +3254,16 @@ module.exports = function (_EventEmitter) {
                 }
               }
             } catch (err) {
-              _didIteratorError7 = true;
-              _iteratorError7 = err;
+              _didIteratorError10 = true;
+              _iteratorError10 = err;
             } finally {
               try {
-                if (!_iteratorNormalCompletion7 && _iterator7.return) {
-                  _iterator7.return();
+                if (!_iteratorNormalCompletion10 && _iterator10.return) {
+                  _iterator10.return();
                 }
               } finally {
-                if (_didIteratorError7) {
-                  throw _iteratorError7;
+                if (_didIteratorError10) {
+                  throw _iteratorError10;
                 }
               }
             }
@@ -3045,7 +3351,7 @@ module.exports = function (_EventEmitter) {
   }, {
     key: '_runSessionTimer',
     value: function _runSessionTimer() {
-      var _this27 = this;
+      var _this28 = this;
 
       var expires = this._sessionTimers.currentExpires;
 
@@ -3056,16 +3362,16 @@ module.exports = function (_EventEmitter) {
       // I'm the refresher.
       if (this._sessionTimers.refresher) {
         this._sessionTimers.timer = setTimeout(function () {
-          if (_this27._status === C.STATUS_TERMINATED) {
+          if (_this28._status === C.STATUS_TERMINATED) {
             return;
           }
 
           debug('runSessionTimer() | sending session refresh request');
 
-          if (_this27._sessionTimers.refreshMethod === JsSIP_C.UPDATE) {
-            _this27._sendUpdate();
+          if (_this28._sessionTimers.refreshMethod === JsSIP_C.UPDATE) {
+            _this28._sendUpdate();
           } else {
-            _this27._sendReinvite();
+            _this28._sendReinvite();
           }
         }, expires * 500); // Half the given interval (as the RFC states).
       }
@@ -3073,13 +3379,13 @@ module.exports = function (_EventEmitter) {
       // I'm not the refresher.
       else {
           this._sessionTimers.timer = setTimeout(function () {
-            if (_this27._status === C.STATUS_TERMINATED) {
+            if (_this28._status === C.STATUS_TERMINATED) {
               return;
             }
 
             debugerror('runSessionTimer() | timer expired, terminating the session');
 
-            _this27.terminate({
+            _this28.terminate({
               cause: JsSIP_C.causes.REQUEST_TIMEOUT,
               status_code: 408,
               reason_phrase: 'Session Timer Expired'
@@ -3092,52 +3398,52 @@ module.exports = function (_EventEmitter) {
     value: function _toogleMuteAudio(mute) {
       var streams = this._connection.getLocalStreams();
 
-      var _iteratorNormalCompletion8 = true;
-      var _didIteratorError8 = false;
-      var _iteratorError8 = undefined;
+      var _iteratorNormalCompletion11 = true;
+      var _didIteratorError11 = false;
+      var _iteratorError11 = undefined;
 
       try {
-        for (var _iterator8 = streams[Symbol.iterator](), _step8; !(_iteratorNormalCompletion8 = (_step8 = _iterator8.next()).done); _iteratorNormalCompletion8 = true) {
-          var stream = _step8.value;
+        for (var _iterator11 = streams[Symbol.iterator](), _step11; !(_iteratorNormalCompletion11 = (_step11 = _iterator11.next()).done); _iteratorNormalCompletion11 = true) {
+          var stream = _step11.value;
 
           var tracks = stream.getAudioTracks();
 
-          var _iteratorNormalCompletion9 = true;
-          var _didIteratorError9 = false;
-          var _iteratorError9 = undefined;
+          var _iteratorNormalCompletion12 = true;
+          var _didIteratorError12 = false;
+          var _iteratorError12 = undefined;
 
           try {
-            for (var _iterator9 = tracks[Symbol.iterator](), _step9; !(_iteratorNormalCompletion9 = (_step9 = _iterator9.next()).done); _iteratorNormalCompletion9 = true) {
-              var track = _step9.value;
+            for (var _iterator12 = tracks[Symbol.iterator](), _step12; !(_iteratorNormalCompletion12 = (_step12 = _iterator12.next()).done); _iteratorNormalCompletion12 = true) {
+              var track = _step12.value;
 
               track.enabled = !mute;
             }
           } catch (err) {
-            _didIteratorError9 = true;
-            _iteratorError9 = err;
+            _didIteratorError12 = true;
+            _iteratorError12 = err;
           } finally {
             try {
-              if (!_iteratorNormalCompletion9 && _iterator9.return) {
-                _iterator9.return();
+              if (!_iteratorNormalCompletion12 && _iterator12.return) {
+                _iterator12.return();
               }
             } finally {
-              if (_didIteratorError9) {
-                throw _iteratorError9;
+              if (_didIteratorError12) {
+                throw _iteratorError12;
               }
             }
           }
         }
       } catch (err) {
-        _didIteratorError8 = true;
-        _iteratorError8 = err;
+        _didIteratorError11 = true;
+        _iteratorError11 = err;
       } finally {
         try {
-          if (!_iteratorNormalCompletion8 && _iterator8.return) {
-            _iterator8.return();
+          if (!_iteratorNormalCompletion11 && _iterator11.return) {
+            _iterator11.return();
           }
         } finally {
-          if (_didIteratorError8) {
-            throw _iteratorError8;
+          if (_didIteratorError11) {
+            throw _iteratorError11;
           }
         }
       }
@@ -3147,52 +3453,52 @@ module.exports = function (_EventEmitter) {
     value: function _toogleMuteVideo(mute) {
       var streams = this._connection.getLocalStreams();
 
-      var _iteratorNormalCompletion10 = true;
-      var _didIteratorError10 = false;
-      var _iteratorError10 = undefined;
+      var _iteratorNormalCompletion13 = true;
+      var _didIteratorError13 = false;
+      var _iteratorError13 = undefined;
 
       try {
-        for (var _iterator10 = streams[Symbol.iterator](), _step10; !(_iteratorNormalCompletion10 = (_step10 = _iterator10.next()).done); _iteratorNormalCompletion10 = true) {
-          var stream = _step10.value;
+        for (var _iterator13 = streams[Symbol.iterator](), _step13; !(_iteratorNormalCompletion13 = (_step13 = _iterator13.next()).done); _iteratorNormalCompletion13 = true) {
+          var stream = _step13.value;
 
           var tracks = stream.getVideoTracks();
 
-          var _iteratorNormalCompletion11 = true;
-          var _didIteratorError11 = false;
-          var _iteratorError11 = undefined;
+          var _iteratorNormalCompletion14 = true;
+          var _didIteratorError14 = false;
+          var _iteratorError14 = undefined;
 
           try {
-            for (var _iterator11 = tracks[Symbol.iterator](), _step11; !(_iteratorNormalCompletion11 = (_step11 = _iterator11.next()).done); _iteratorNormalCompletion11 = true) {
-              var track = _step11.value;
+            for (var _iterator14 = tracks[Symbol.iterator](), _step14; !(_iteratorNormalCompletion14 = (_step14 = _iterator14.next()).done); _iteratorNormalCompletion14 = true) {
+              var track = _step14.value;
 
               track.enabled = !mute;
             }
           } catch (err) {
-            _didIteratorError11 = true;
-            _iteratorError11 = err;
+            _didIteratorError14 = true;
+            _iteratorError14 = err;
           } finally {
             try {
-              if (!_iteratorNormalCompletion11 && _iterator11.return) {
-                _iterator11.return();
+              if (!_iteratorNormalCompletion14 && _iterator14.return) {
+                _iterator14.return();
               }
             } finally {
-              if (_didIteratorError11) {
-                throw _iteratorError11;
+              if (_didIteratorError14) {
+                throw _iteratorError14;
               }
             }
           }
         }
       } catch (err) {
-        _didIteratorError10 = true;
-        _iteratorError10 = err;
+        _didIteratorError13 = true;
+        _iteratorError13 = err;
       } finally {
         try {
-          if (!_iteratorNormalCompletion10 && _iterator10.return) {
-            _iterator10.return();
+          if (!_iteratorNormalCompletion13 && _iterator13.return) {
+            _iterator13.return();
           }
         } finally {
-          if (_didIteratorError10) {
-            throw _iteratorError10;
+          if (_didIteratorError13) {
+            throw _iteratorError13;
           }
         }
       }
