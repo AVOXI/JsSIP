@@ -358,6 +358,9 @@ module.exports = /*#__PURE__*/function (_EventEmitter) {
         case 'ha1':
           return this._configuration.ha1;
 
+        case 'authorization_jwt':
+          return this._configuration.authorization_jwt;
+
         default:
           debugerror('get() | cannot get "%s" parameter in runtime', parameter);
           return undefined;
@@ -395,6 +398,12 @@ module.exports = /*#__PURE__*/function (_EventEmitter) {
             this._configuration.ha1 = String(value); // Delete the plain SIP password.
 
             this._configuration.password = null;
+            break;
+          }
+
+        case 'authorization_jwt':
+          {
+            this._configuration.authorization_jwt = String(value);
             break;
           }
 
@@ -835,7 +844,7 @@ module.exports = /*#__PURE__*/function (_EventEmitter) {
         }
       }; // Seal the configuration.
 
-      var writable_parameters = ['authorization_user', 'password', 'realm', 'ha1', 'display_name', 'register'];
+      var writable_parameters = ['authorization_user', 'password', 'realm', 'ha1', 'authorization_jwt', 'display_name', 'register'];
 
       for (var parameter in this._configuration) {
         if (Object.prototype.hasOwnProperty.call(this._configuration, parameter)) {
@@ -866,6 +875,7 @@ module.exports = /*#__PURE__*/function (_EventEmitter) {
 
             case 'password':
             case 'ha1':
+            case 'authorization_jwt':
               debug("- ".concat(_parameter, ": NOT SHOWN"));
               break;
 
