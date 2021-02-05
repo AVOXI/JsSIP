@@ -1752,7 +1752,12 @@ module.exports = /*#__PURE__*/function (_EventEmitter) {
   }, {
     key: "_close",
     value: function _close() {
-      debug('close()');
+      debug('close()'); // Close local MediaStream if it was not given by the user.
+
+      if (this._localMediaStream && this._localMediaStreamLocallyGenerated) {
+        debug('close() | closing local MediaStream');
+        Utils.closeMediaStream(this._localMediaStream);
+      }
 
       if (this._status === C.STATUS_TERMINATED) {
         return;
@@ -1766,12 +1771,6 @@ module.exports = /*#__PURE__*/function (_EventEmitter) {
         } catch (error) {
           debugerror('close() | error closing the RTCPeerConnection: %o', error);
         }
-      } // Close local MediaStream if it was not given by the user.
-
-
-      if (this._localMediaStream && this._localMediaStreamLocallyGenerated) {
-        debug('close() | closing local MediaStream');
-        Utils.closeMediaStream(this._localMediaStream);
       } // Terminate signaling.
       // Clear SIP timers.
 
