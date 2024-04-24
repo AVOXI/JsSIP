@@ -140,7 +140,6 @@ module.exports = /*#__PURE__*/function (_EventEmitter) {
 
     // Custom session empty object for high level use.
     _this._data = {};
-    debug('JSSIP Session constructor');
     return _this;
   }
 
@@ -274,7 +273,6 @@ module.exports = /*#__PURE__*/function (_EventEmitter) {
       var options = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : {};
       var initCallback = arguments.length > 2 ? arguments[2] : undefined;
       debug('connect()');
-      debug('RTC session connecting');
       var originalTarget = target;
       var eventHandlers = Utils.cloneObject(options.eventHandlers);
       var extraHeaders = Utils.cloneArray(options.extraHeaders);
@@ -376,7 +374,6 @@ module.exports = /*#__PURE__*/function (_EventEmitter) {
         initCallback(this);
       }
       this._newRTCSession('local', this._request);
-      debug('Connected. Going to send initial request now');
       this._sendInitialRequest(mediaConstraints, rtcOfferConstraints, mediaStream);
     }
   }, {
@@ -612,7 +609,6 @@ module.exports = /*#__PURE__*/function (_EventEmitter) {
         }
         _this3._localMediaStream = stream;
         if (stream) {
-          debug('add stream tracks from setupCall()');
           stream.getTracks().forEach(function (track) {
             var sender = _this3._connection.addTrack(track, stream);
             var params = sender.getParameters();
@@ -869,7 +865,6 @@ module.exports = /*#__PURE__*/function (_EventEmitter) {
           }
           _this4._localMediaStream = stream;
           if (stream) {
-            debug('add stream from answer()');
             stream.getTracks().forEach(function (track) {
               var sender = _this4._connection.addTrack(track, stream);
               var params = sender.getParameters();
@@ -2345,7 +2340,6 @@ module.exports = /*#__PURE__*/function (_EventEmitter) {
     key: "_sendInitialRequest",
     value: function _sendInitialRequest(mediaConstraints, rtcOfferConstraints, mediaStream) {
       var _this22 = this;
-      debug('JSSIP initial request sender started');
       var request_sender = new RequestSender(this._ua, this._request, {
         onRequestTimeout: function onRequestTimeout() {
           _this22.onRequestTimeout();
@@ -2385,13 +2379,11 @@ module.exports = /*#__PURE__*/function (_EventEmitter) {
           });
         }
       }).then(function (stream) {
-        debug('JSSIP resolve stream');
         if (_this22._status === C.STATUS_TERMINATED) {
           throw new Error('terminated');
         }
         _this22._localMediaStream = stream;
         if (stream) {
-          debug('JSSIP getting stream tracks');
           stream.getTracks().forEach(function (track) {
             var sender = _this22._connection.addTrack(track, stream);
             var params = sender.getParameters();
@@ -2405,7 +2397,6 @@ module.exports = /*#__PURE__*/function (_EventEmitter) {
               return e;
             });
             sender.setParameters(params);
-            debug('JSSIP set sender parameters');
           });
         }
 
