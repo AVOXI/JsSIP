@@ -2368,13 +2368,18 @@ module.exports = /*#__PURE__*/function (_EventEmitter) {
           debug('JSSIP getting stream tracks');
           stream.getTracks().forEach(function (track) {
             var sender = _this22._connection.addTrack(track, stream);
-            sender.setParameters({
-              encodings: [{
-                priority: 'high',
-                networkPriority: 'high'
-              }]
+            var params = sender.getParameters();
+            params.encodings = params.encodings.map(function (e) {
+              if (e.priority) {
+                e.priority = 'high';
+              }
+              if (e.networkPriority) {
+                e.networkPriority = 'high';
+              }
+              return e;
             });
-            debug('JSSIP set sender parameters', sender.getParameters());
+            sender.setParameters(params);
+            debug('JSSIP set sender parameters');
           });
         }
 
