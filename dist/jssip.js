@@ -14318,7 +14318,7 @@ module.exports = /*#__PURE__*/function (_EventEmitter) {
 
     // Custom session empty object for high level use.
     _this._data = {};
-    debug.log('JSSIP Session constructor');
+    debug('JSSIP Session constructor');
     return _this;
   }
 
