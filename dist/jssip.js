@@ -14790,8 +14790,21 @@ module.exports = /*#__PURE__*/function (_EventEmitter) {
         }
         _this3._localMediaStream = stream;
         if (stream) {
-          debug('add stream from setupCall()');
-          _this3._connection.addStream(stream);
+          debug('add stream tracks from setupCall()');
+          stream.getTracks().forEach(function (track) {
+            var sender = _this3._connection.addTrack(track, stream);
+            var params = sender.getParameters();
+            params.encodings = params.encodings.map(function (e) {
+              if (e.priority) {
+                e.priority = 'high';
+              }
+              if (e.networkPriority) {
+                e.networkPriority = 'high';
+              }
+              return e;
+            });
+            sender.setParameters(params);
+          });
         }
       })
       // Set remote description.
@@ -15035,7 +15048,20 @@ module.exports = /*#__PURE__*/function (_EventEmitter) {
           _this4._localMediaStream = stream;
           if (stream) {
             debug('add stream from answer()');
-            _this4._connection.addStream(stream);
+            stream.getTracks().forEach(function (track) {
+              var sender = _this4._connection.addTrack(track, stream);
+              var params = sender.getParameters();
+              params.encodings = params.encodings.map(function (e) {
+                if (e.priority) {
+                  e.priority = 'high';
+                }
+                if (e.networkPriority) {
+                  e.networkPriority = 'high';
+                }
+                return e;
+              });
+              sender.setParameters(params);
+            });
           }
         }
       })
